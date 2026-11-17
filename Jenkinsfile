@@ -5,10 +5,8 @@ pipeline {
     environment {
         DOCKER_CREDENTIALS_ID = 'docker-cred'
         DOCKER_IMAGE          = 'muhammednashid/maker'
-
         SONAR_SERVER_NAME     = 'sonarqube-env'
         SONAR_SCANNER_TOOL    = 'sonar-scanner'
-
         GIT_CREDENTIALS_ID    = 'github-cred'
         MANIFEST_REPO         = 'https://github.com/muhammed-nashid07/maker_folder.git'
         MANIFEST_BRANCH       = 'main'
@@ -16,14 +14,12 @@ pipeline {
 
     stages {
 
-        // Stage 1: Checkout Source Code
         stage('Checkout Source Code') {
             steps {
                 echo "Source code checked out successfully"
             }
         }
 
-        // Stage 2: SonarQube Analysis
         stage('SonarQube Analysis') {
             steps {
                 script {
@@ -34,15 +30,13 @@ pipeline {
                             ${scannerHome}/bin/sonar-scanner \
                             -Dsonar.projectKey=maker-key \
                             -Dsonar.projectName=maker-project \
-                            -Dsonar.sources=. \
-                            -Dsonar.sourceEncoding=UTF-8
+                            -Dsonar.sources=.
                         """
                     }
                 }
             }
         }
 
-        // Stage 3: Build and Push Docker Image
         stage('Build & Push Docker Image') {
             steps {
                 script {
@@ -54,55 +48,58 @@ pipeline {
                         )
                     ]) {
                         sh """
-                            echo "\$DOCKER_PASS" | docker login \
-                            -u "\$DOCKER_USER" --password-stdin
+                            echo "\$DOCKER_PASS" | docker login -u "\$DOCKER_USER" --password-stdin
 
                             docker build \
-                            -t ${DOCKER_IMAGE}:${BUILD_NUMBER} \
+                            -t ${DOCKER_IMAGE}:${env.BUILD_NUMBER} \
                             -t ${DOCKER_IMAGE}:latest \
                             -f Dockerfile .
 
-                            docker push ${DOCKER_IMAGE}:${BUILD_NUMBER}
-
+                            docker push ${DOCKER_IMAGE}:${env.BUILD_NUMBER}
                             docker push ${DOCKER_IMAGE}:latest
-
-                            docker logout
                         """
                     }
                 }
             }
         }
 
-        // Stage 4: Update Kubernetes Manifest Repository
         stage('Update Manifest Repo') {
             steps {
                 dir('manifest-workspace') {
 
-                    git branch: "${MANIFEST_BRANCH}",
-                        credentialsId: "${GIT_CREDENTIALS_ID}",
-                        url: "${MANIFEST_REPO}"
+                    checkout([
+                        $class: 'GitSCM',
+                        branches: [[name: "*/${MANIFEST_BRANCH}"]],
+                        userRemoteConfigs: [[
+                            credentialsId: "${GIT_CREDENTIALS_ID}",
+                            url: "${MANIFEST_REPO}"
+                        ]]
+                    ])
 
-                    sh """
-                        git config user.name "muhammed-nashid07"
-                        git config user.email "muhammadnashid25@gmail.com"
+                    withCredentials([
+                        usernamePassword(
+                            credentialsId: "${GIT_CREDENTIALS_ID}",
+                            usernameVariable: 'GIT_USERNAME',
+                            passwordVariable: 'GIT_TOKEN'
+                        )
+                    ]) {
+                        sh """
+                            sed -i 's|image: IMAGE_PLACEHOLDER|image: ${DOCKER_IMAGE}:${env.BUILD_NUMBER}|' manifests/deployment.yaml
 
-                        # Update Kubernetes deployment image
-                        sed -i '/name: maker/{n;s|image:.*|image: ${DOCKER_IMAGE}:${BUILD_NUMBER}|;}' \
-                        manifests/deployment.yaml
-
-                        # Check for changes before committing
-                        if ! git diff --quiet; then
+                            git config user.name "muhammed-nashid07"
+                            git config user.email "muhammadnashid25@gmail.com"
 
                             git add manifests/deployment.yaml
 
-                            git commit -m "chore(manifest): update maker image tag to ${BUILD_NUMBER} [skip ci]"
+                            if ! git diff --cached --quiet; then
+                                git commit -m "Update maker image to ${env.BUILD_NUMBER}"
 
-                            git push origin ${MANIFEST_BRANCH}
-
-                        else
-                            echo "No manifest changes detected."
-                        fi
-                    """
+                                git push https://\${GIT_USERNAME}:\${GIT_TOKEN}@github.com/muhammed-nashid07/maker_folder.git HEAD:${MANIFEST_BRANCH}
+                            else
+                                echo "No manifest changes to commit"
+                            fi
+                        """
+                    }
                 }
             }
         }
@@ -110,16 +107,13 @@ pipeline {
 
     post {
         success {
-            echo 'Pipeline executed successfully! Docker image pushed and Kubernetes manifest updated.'
+            echo 'Pipeline executed successfully! Manifest repo updated with new image tag.'
         }
 
         failure {
             echo 'Pipeline failed. Please review the stage logs above.'
         }
-
-        always {
-            echo 'Pipeline execution completed.'
-        }
     }
 }
+
 
